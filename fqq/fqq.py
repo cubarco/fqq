@@ -21,7 +21,6 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
 DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
 OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
 '''
 
 import urllib
@@ -33,7 +32,6 @@ import json
 import sys
 import socket
 import os
-# import threading
 
 from cookielib import CookieJar, Cookie
 
@@ -138,7 +136,7 @@ class Fqq():
                     rest={'HttpOnly': None}, rfc2109=False)
         self._cj.set_cookie(ck)
 
-        # fetch qrcode image and print as ascii code
+        # fetch qrcode image and print
         r = self.http_req(self.QRCODE_URL)
         qr.qr_printraw(r)
 
@@ -238,7 +236,10 @@ class Fqq():
         self.groups[gcode]['gid'] = results['ginfo']['gid']
         self.groups[gcode]['name'] = results['ginfo']['name']
 
-        marknames = {i['muin']: i['card'] for i in results['cards']}
+        if 'cards' in results:
+            marknames = {i['muin']: i['card'] for i in results['cards']}
+        else:
+            marknames = {}
         self.groups[gcode].setdefault('members', {})
         for member in results['minfo']:
             uin = member['uin']
@@ -325,26 +326,25 @@ class Fqq():
 
     def send_group_msg_by_uin(self, group_uin, msg):
         url = 'http://d.web2.qq.com/channel/send_qun_msg2'
-        post_dict = {"group_uin": int(group_uin),
-                     "content": ("[\"" + msg +
-                                 "\",[\"font\",{\"name\":\"宋体\",\"size\":10"
-                                 ",\"style\":[0,0,0],\"color\":\"000000\"}]]"),
-                     "face": 579,
-                     "clientid": self.client_id,
-                     "msg_id": self.msg_id,
-                     "psessionid": self.psessionid
-                     }
+        post_dict = {
+            "group_uin": int(group_uin),
+            "content": ("[\"" + msg +
+                        "\",[\"font\",{\"name\":\"宋体\",\"size\":10"
+                        ",\"style\":[0,0,0],\"color\":\"000000\"}]]"),
+            "face": 579,
+            "clientid": self.client_id,
+            "msg_id": self.msg_id,
+            "psessionid": self.psessionid
+        }
         self.msg_id += 1
         print self.http_req(url, ref=self.D_REFERER_URL,
-                            data='r=' + urllib.quote(json.dumps(post_dict)))
+                            data='r=' + urllib.urlencode(post_dict))
 
     def content2string(self, contents):
         line = ""
         for content in contents:
             if isinstance(content, list):
-                if (content[0] == 'cface' or
-                        content[0] == 'face' or
-                        content[0] == 'offpic'):
+                if content[0] in {'cface', 'face', 'offpic'}:
                     line += '[sticker]'
             elif isinstance(content, unicode):
                 line += content
@@ -421,7 +421,6 @@ class Fqq():
                 )
                 continue
             elif poll['retcode'] != 0:
-                print poll
                 continue
 
             s, e = self.dispatcher(poll['result'])
