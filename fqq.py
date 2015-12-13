@@ -25,13 +25,12 @@ OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import urllib
 import urllib2
-import qr
 import time
 import random
 import json
 import sys
 import socket
-import os
+import logging
 
 from cookielib import CookieJar, Cookie
 
@@ -53,26 +52,31 @@ class Fqq():
         '&login_sig=&pt_randsalt=0'
     GET_VFWEBQQ_URL = 'http://s.web2.qq.com/api/getvfwebqq' \
         '?ptwebqq={}&clientid={}&psessionid=&t={}'
-    LOGIN2_URL = 'http://d.web2.qq.com/channel/login2'
+    LOGIN2_URL = 'http://d1.web2.qq.com/channel/login2'
     GET_USER_FRIENDS_URL = 'http://s.web2.qq.com/api/get_user_friends2'
     GET_GROUP_INFO_EXT2_URL = 'http://s.web2.qq.com/api/get_group_info_ext2' \
         '?gcode={}&vfwebqq={}&t={}'
     GET_DISCU_INFO_URL = 'http://d.web2.qq.com/channel/get_discu_info?did={}' \
         '&vfwebqq={}&clientid={}&psessionid={}&t={}'
-    POLL2_URL = 'http://d.web2.qq.com/channel/poll2'
+    POLL2_URL = 'http://d1.web2.qq.com/channel/poll2'
 
     S_REFERER_URL = 'http://s.web2.qq.com/proxy.html' \
         '?v=20130916001&callback=1&id=1'
-    D_REFERER_URL = 'http://d.web2.qq.com/proxy.html' \
-        '?v=20110331002&callback=1&id=3'
+    D_REFERER_URL = 'http://d1.web2.qq.com/proxy.html' \
+        '?v=20151105001&callback=1&id=2'
 
     def __init__(self):
         random.seed(time.time())
-        self.msg_id = random.randint(20000, 50000)
-        self.client_id = random.randint(20000000, 90000000)
+        self.msg_id = 42520001
+        # self.client_id = random.randint(20000000, 90000000)
+        self.client_id = 53999199
         self.friends = {}
         self.groups = {}
         self.discus = {}
+        self._buddy_msg_handlers = []
+        self._qr_handler_func = None
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger('fqq')
         self._cj = CookieJar()
         self._opener = urllib2.build_opener(
             urllib2.HTTPCookieProcessor(self._cj)
@@ -114,7 +118,19 @@ class Fqq():
         if ref:
             self._opener.addheaders.pop(1)
 
-        return ret.read()
+        ret = ret.read()
+        self.logger.debug(ret)
+        return ret
+
+    def set_qr_handler(self, func):
+        self._qr_handler_func = func
+
+    def qr_handler(self, qr_raw):
+        if self._qr_handler_func:
+            return self._qr_handler_func(qr_raw)
+        else:
+            self.logger.error('qr_handler not specified.')
+            sys.exit(1)
 
     def login(self):
         # set cookie
@@ -138,22 +154,21 @@ class Fqq():
 
         # fetch qrcode image and print
         r = self.http_req(self.QRCODE_URL)
-        qr.qr_printraw(r)
+        self.qr_handler(r)
 
         # check qrcode status
         while True:
             time.sleep(2)
             qr_status_ret = self.http_req(self.QR_STATUS_URL)
             if qr_status_ret.find("http") >= 0:
-                print "verified!"
+                self.logger.info("verified!")
                 break
             if qr_status_ret.find("二维码认证中") >= 0:
-                print 'verifying.'
+                self.logger.info('verifying.')
             if qr_status_ret.find("二维码已失效") >= 0:
-                print "expired."
+                self.logger.info("expired.")
                 r = self.http_req(self.QRCODE_URL)
-                os.system("clear")
-                qr.qr_printraw(r)
+                self.qr_handler(r)
 
         # checksig
         checksig_url = qr_status_ret.split(',')[2].strip("''")
@@ -171,6 +186,7 @@ class Fqq():
             sys.exit(-1)
 
         self.vfwebqq = vfwebqq_ret['result']['vfwebqq']
+        self.logger.debug("vfwebqq: %s" % self.vfwebqq)
 
         # login2, fetch login token
         login2_post_data = (
@@ -203,6 +219,7 @@ class Fqq():
         userfriends = json.loads(ret)
 
         if userfriends['retcode'] != 0:
+            self.logger.critical(userfriends)
             return False
 
         results = userfriends['result']
@@ -221,6 +238,7 @@ class Fqq():
         return True
 
     def get_group_info_ext(self, gcode):
+        # XXX not working
         url = self.GET_GROUP_INFO_EXT2_URL.format(str(gcode), self.vfwebqq,
                                                   int(time.time()))
         ret = self.http_req(url, ref=self.S_REFERER_URL)
@@ -228,6 +246,7 @@ class Fqq():
         groupexts = json.loads(ret)
 
         if groupexts['retcode'] != 0:
+            self.logger.critical(groupexts)
             return False
 
         results = groupexts['result']
@@ -255,6 +274,7 @@ class Fqq():
         return True
 
     def get_discu_info(self, did):
+        # XXX not working
         url = self.GET_DISCU_INFO_URL.format(did, self.vfwebqq, self.client_id,
                                              self.psessionid, int(time.time()))
         ret = self.http_req(url, ref=self.D_REFERER_URL)
@@ -262,6 +282,7 @@ class Fqq():
         discuinfos = json.loads(ret)
 
         if discuinfos['retcode'] != 0:
+            self.logger.critical(discuinfos)
             return False
 
         results = discuinfos['result']
@@ -277,38 +298,28 @@ class Fqq():
             }
 
     def get_gname_by_gcode(self, gcode):
-        for i in range(3):
-            if gcode not in self.groups:
-                self.get_group_info_ext(gcode)
-            else:
-                break
-        return self.groups[gcode]['name']
+        if gcode not in self.groups:
+            self.get_group_info_ext(gcode)
+            if gcode in self.groups:
+                return self.groups[gcode]['name']
+        return str(gcode)
 
     def get_dname_by_did(self, did):
-        for i in range(3):
-            if did not in self.discus:
-                self.get_discu_info(did)
-            else:
-                break
-        return self.discus[did]['name']
+        if did not in self.discus:
+            self.get_discu_info(did)
+            if did in self.discus:
+                return self.discus[did]['name']
+        return str(did)
 
     def get_nick_by_uin(self, uin):
         if uin in self.friends:
             return self.friends[uin]['pnick']
-
-        for group in self.groups.values:
-            if uin in group['members']:
-                return group['members'][uin]['nick']
-
-        for discu in self.discus.values:
-            if uin in discu['members']:
-                return discu['members'][uin]['nick']
-
         return str(uin)
 
     def get_nick_by_uin_gcode(self, uin, gcode):
         if gcode not in self.groups:
-            self.get_group_info_ext(gcode)
+            if not self.get_group_info_ext(gcode):
+                return str(uin)
 
         if uin in self.groups[gcode]['members']:
             return self.groups[gcode]['members'][uin]['pnick']
@@ -317,7 +328,8 @@ class Fqq():
 
     def get_nick_by_uin_did(self, uin, did):
         if did not in self.discus:
-            self.get_discu_info(did)
+            if not self.get_discu_info(did):
+                return str(uin)
 
         if uin in self.discus[did]['members']:
             return self.discus[did]['members'][uin]['nick']
@@ -325,7 +337,7 @@ class Fqq():
         return str(uin)
 
     def send_group_msg_by_uin(self, group_uin, msg):
-        url = 'http://d.web2.qq.com/channel/send_qun_msg2'
+        url = 'http://d1.web2.qq.com/channel/send_qun_msg2'
         post_dict = {
             "group_uin": int(group_uin),
             "content": ("[\"" + msg +
@@ -337,8 +349,27 @@ class Fqq():
             "psessionid": self.psessionid
         }
         self.msg_id += 1
-        print self.http_req(url, ref=self.D_REFERER_URL,
-                            data='r=' + urllib.urlencode(post_dict))
+        self.http_req(url, ref=self.D_REFERER_URL,
+                          data='r=' + urllib.quote(json.dumps(post_dict)))
+
+    def send_buddy_msg_by_uin(self, buddy_uin, msg):
+        url = 'http://d1.web2.qq.com/channel/send_buddy_msg2'
+        post_dict = {
+            "to": buddy_uin,
+            "content": ("[\"" + msg +
+                        "\",[\"font\",{\"name\":\"宋体\",\"size\":10"
+                        ",\"style\":[0,0,0],\"color\":\"000000\"}]]"),
+            "face": 579,
+            "clientid": self.client_id,
+            "msg_id": self.msg_id,
+            "psessionid": self.psessionid
+        }
+        self.msg_id += 1
+        self.http_req(url, ref=self.D_REFERER_URL,
+                          data='r=' + urllib.quote(json.dumps(post_dict)))
+
+    def add_buddy_msg_handler(self, func):
+        self._buddy_msg_handlers.append(func)
 
     def content2string(self, contents):
         line = ""
@@ -349,7 +380,7 @@ class Fqq():
             elif isinstance(content, unicode):
                 line += content
             else:
-                print content
+                self.logger.debug(content)
         return line
 
     def dispatcher(self, results):
@@ -358,33 +389,38 @@ class Fqq():
             value = result['value']
             if poll_type == 'group_message':
                 # TODO dispatch group_message
-                gname = self.get_gname_by_gcode(value['group_code'])
-                nick = self.get_nick_by_uin_gcode(value['send_uin'],
-                                                  value['group_code'])
+                # gname = self.get_gname_by_gcode(value['group_code'])
+                # nick = self.get_nick_by_uin_gcode(value['send_uin'],
+                                                  # value['group_code'])
                 line = self.content2string(value['content'])
-                print u'[GROUP {}] {}: {}'.format(
-                    gname, nick, line)
+                self.logger.debug(u'[GROUP] {}'.format(line))
             elif poll_type == 'discu_message':
                 # TODO dispatch discus message
-                dname = self.get_dname_by_did(value['did'])
-                nick = self.get_nick_by_uin_did(value['send_uin'],
-                                                value['did'])
+                # dname = self.get_dname_by_did(value['did'])
+                # nick = self.get_nick_by_uin_did(value['send_uin'],
+                                                # value['did'])
                 line = self.content2string(value['content'])
-                print u'[DISCUS {}] {}: {}'.format(
-                    dname, nick, line)
+                self.logger.debug(u'[DISCUS] {}'.format(line))
             elif poll_type == 'message':
-                # TODO dispatch message
                 line = self.content2string(value['content'])
                 nick = self.get_nick_by_uin(value['from_uin'])
-                print u'[PRIV] {}: {}'.format(
-                    nick, line)
+                self.logger.debug(u'[PRIV] {}: {}'.format(
+                    nick, line))
+                bundle = {
+                    'msg': line,
+                    'nick': nick,
+                    'uin': value['from_uin']
+                }
+                for buddy_msg_handler in self._buddy_msg_handlers:
+                    buddy_msg_handler(self, bundle)
             elif poll_type == 'buddies_status_change':
                 pass
             elif poll_type == 'kick_message':
                 return False, result['value']['reason']
             else:
-                print 'Unhandled poll type: ' + result['poll_type']
-                print result
+                self.logger.debug('Unhandled poll type: ' +
+                                  result['poll_type'])
+                self.logger.debug(result)
         return True, None
 
     def loop(self):
@@ -399,13 +435,13 @@ class Fqq():
                 ret = self.http_req(self.POLL2_URL, ref=self.D_REFERER_URL,
                                     data=post_data, timeout=5)
             except urllib2.URLError, e:
-                print "error: %s" % e
+                self.logger.error("error: %s" % e)
                 continue
             except socket.timeout:
-                print 'timeout'
+                self.logger.debug('timeout')
                 continue
 
-            print ret
+            self.logger.debug(ret)
             if ret:
                 poll = json.loads(ret)
 
@@ -427,13 +463,6 @@ class Fqq():
             if s:
                 time.sleep(1)
             else:
-                print e
+                # self.login()
+                self.logger.error(e)
                 return False
-
-
-if __name__ == '__main__':
-    fqq = Fqq()
-    fqq.login()
-    fqq.get_user_friends()
-    print 'user friends infomation fetched.'
-    fqq.loop()
